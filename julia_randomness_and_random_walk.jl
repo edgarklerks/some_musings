@@ -2,8 +2,10 @@ using Random
 using Pkg
 
 Pkg.add("StatsPlots")
+Pkg.add("KernelDensity")
 
 using StatsPlots
+using KernelDensity
 #=
 Small model of a taxi cab getting directions of a random generator
 
@@ -24,6 +26,8 @@ Which are generators of the group of our taxi cab together with vector addition.
 @enum Direction L R U D
 @enum Reset Rst
 const DirectionVector = Vector{Int64}
+const channelBufferSize = 100
+const startCompressionRatio = 100
 
 function defaultCabDirection(setSeedChannel :: Channel{Integer}, channel::Channel{Direction}, seed :: Integer)
     generator = MersenneTwister(seed)
@@ -76,7 +80,7 @@ function compressor(compressionRatio :: Int64, setCompressionRatio :: Channel{In
     end
 end
 
-function observe(n :: Integer, channel :: Channel{T}) :: Array{T} where T <: Any
+function observe!(n :: Integer, channel :: Channel{T}) :: Array{T} where T <: Any
     p = Array{T,1}(undef,n)
     for i in 1:n
         e = take!(channel)
@@ -102,7 +106,7 @@ function destroy!(n :: Integer, channel :: Channel)
     end
 end
 
-function taxiCab(startPostion :: CompressedDirectionVector, reset :: Channel{Reset},  input :: Channel{DirectionVector}, output :: Channel{DirectionVector})
+function taxiCab(startPostion :: DirectionVector, reset :: Channel{Reset},  input :: Channel{DirectionVector}, output :: Channel{DirectionVector})
         currentPosition = startPostion
         while true
 
@@ -117,26 +121,41 @@ function taxiCab(startPostion :: CompressedDirectionVector, reset :: Channel{Res
         end
 end
 
-directionsChannel = Channel{Direction}(100)
-vectorsChannel = Channel{DirectionVector}(100)
-compressedChannel = Channel{DirectionVector}(100)
-taxiCabPositionChannel = Channel{DirectionVector}(100)
+directionsChannel = Channel{Direction}(channelBufferSize)
+vectorsChannel = Channel{DirectionVector}(channelBufferSize)
+compressedChannel = Channel{DirectionVector}(channelBufferSize)
+taxiCabPositionChannel = Channel{DirectionVector}(channelBufferSize)
 resetTaxiChannel = Channel{Reset}(1)
 setCompressionRatioChannel = Channel{Int64}(1)
 setSeedChannel = Channel{Integer}(1)
 @async defaultCabDirection(setSeedChannel, directionsChannel,1234)
 @async directionsMapper(directionsChannel,vectorsChannel)
-@async compressor(1,setCompressionRatioChannel, vectorsChannel, compressedChannel)
-@async taxiCab([0.0;0.0],resetTaxiChannel, compressedChannel,taxiCabPositionChannel)
+@async compressor(startCompresssionRatio,setCompressionRatioChannel, vectorsChannel, compressedChannel)
+@async taxiCab([0;0],resetTaxiChannel, compressedChannel,taxiCabPositionChannel)
 
 
-x,y = observeUnzip!(10000, taxiCabPositionChannel)
+x,y = observeUnzip!(1000, taxiCabPositionChannel)
+
+function resetChannel(channel :: Channel)
+    for i in 1:(channelBufferSize)
+        take!(channel)
+    end
+end
 
 # Simple interface to the taxi
+function resetWalk(compressionRatio :: Int64, seed :: Integer)
+    resetChannel(taxiCabPositionChannel)
+    put!(resetTaxiChannel,Rst)
+    put!(setCompressionRatioChannel,compressionRatio)
+    put!(setSeedChannel, seed)
+end
 
-put!(resetTaxiChannel,Rst)
-put!(setCompressionRatioChannel,10000)
+resetWalk(compressionRatio = 100, seed = 1)
 
+
+density = kde((x,y))
 histogram2d(x,y)
+heatmap(density)
+plot(density)
 plot(x,y)
 scatter(x,y)
